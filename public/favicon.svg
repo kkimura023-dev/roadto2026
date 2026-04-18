@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#000"/>
+  <circle cx="256" cy="200" r="110" fill="none" stroke="#10b981" stroke-width="12"/>
+  <path d="M256 110 L284 178 L246 210 L208 178 Z" fill="#10b981"/>
+  <path d="M180 230 L216 246 L208 290 L166 284 Z" fill="#10b981"/>
+  <path d="M332 230 L336 284 L294 290 L286 246 Z" fill="#10b981"/>
+  <text x="256" y="420" font-family="'Bebas Neue', sans-serif" font-size="120" font-weight="bold" fill="#10b981" text-anchor="middle" letter-spacing="4">2026</text>
+</svg>
