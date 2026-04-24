@@ -1,13 +1,9 @@
 import React, { useState, useMemo } from "react";
 
 // ==========================================================================
-// FIFA WORLD CUP 2026 — ROAD SIMULATOR v2
+// FIFA WORLD CUP 2026 — ROAD SIMULATOR v3
 // - Team pick → GS list + R32~Final branching by 1st/2nd/3rd place
-// - 3rd place shows ALL possible R32 opponents (up to 4)
-// - Other 11 groups: seed by FIFA ranking (Apr 2026)
-// - Times: ET (primary) + (local offset) + JST
-// - Venue: Google Maps link + in-app map pin
-// - Google Calendar 1-click add
+// - Calendar tab: all 104 matches with TZ toggle, city filter, sim mode
 // ==========================================================================
 
 // ---------- Team data ----------
@@ -112,6 +108,9 @@ const VENUES = {
 // Offset from ET (EDT = UTC-4 in June/July). PT=-3, CT=-1, Mexico CST=-2, ET=0
 const TZ_OFFSET_FROM_ET = { PT: -3, CT: -1, ET: 0, CST: -2 };
 
+// All unique venue cities for the city filter
+const ALL_CITIES = [...new Set(Object.values(VENUES).map(v => v.city))].sort();
+
 // ---------- All 104 matches (parsed from official PDF v17) ----------
 const M = (n,d,t,a,b,venue,g) => ({ num:n, date:d, timeET:t, team1:a, team2:b, venue, city: VENUES[venue].city, group:g });
 const ALL_MATCHES = [
@@ -187,7 +186,7 @@ const ALL_MATCHES = [
   M(70,"2026-06-27","22:00","JOR","ARG","AT&T Stadium","J"),
   M(71,"2026-06-27","19:30","COL","POR","Hard Rock Stadium","K"),
   M(72,"2026-06-27","19:30","COD","UZB","Mercedes-Benz Stadium","K"),
-  // Round of 32 — sides are abstract slot refs {r: "1A"|"2B"|"3", from:[groups]}
+  // Round of 32
   M(73,"2026-06-28","15:00",{r:"2A"},{r:"2B"},"SoFi Stadium","R32"),
   M(74,"2026-06-29","16:30",{r:"1E"},{r:"3",from:["A","B","C","D","F"]},"Gillette Stadium","R32"),
   M(75,"2026-06-29","21:00",{r:"1F"},{r:"2C"},"Estadio BBVA","R32"),
@@ -248,7 +247,6 @@ function weekdayJa(dateStr) {
 function fmtShort(s) { const [,m,d] = s.split("-"); return `${Number(m)}/${Number(d)}(${weekdayJa(s)})`; }
 function offsetLabel(n) { return n === 0 ? "±0" : (n > 0 ? `+${n}` : `${n}`); }
 
-// Rank-based GS standings: for each group, order teams by FIFA rank (best → worst)
 function seedStandings() {
   const s = {};
   GROUP_KEYS.forEach(g => {
@@ -257,18 +255,15 @@ function seedStandings() {
   return s;
 }
 
-// Override only myTeam's rank within its group; others keep rank order
-function standingsWithMyRank(myTeam, myRank /* 0..3 */) {
+function standingsWithMyRank(myTeam, myRank) {
   const seed = seedStandings();
   const g = GROUP_KEYS.find(k => GROUPS[k].includes(myTeam));
-  const arr = seed[g].filter(t => t !== myTeam);   // 3 teams in original rank order
-  arr.splice(myRank, 0, myTeam);                   // insert myTeam at chosen position
+  const arr = seed[g].filter(t => t !== myTeam);
+  arr.splice(myRank, 0, myTeam);
   seed[g] = arr;
   return { standings: seed, myGroup: g };
 }
 
-// Assign 3rd-place teams to R32 slots (greedy, allowed-group order)
-// Returns: { [r32MatchNum]: group-letter }
 const R32_THIRD_SLOTS = [
   { num:74, from:["A","B","C","D","F"] },
   { num:77, from:["C","D","F","G","H"] },
@@ -279,7 +274,7 @@ const R32_THIRD_SLOTS = [
   { num:85, from:["E","F","G","I","J"] },
   { num:87, from:["D","E","I","J","L"] },
 ];
-function assignThirds(standings /* all 12 groups 3rd-place teams */) {
+function assignThirds(standings) {
   const used = new Set();
   const map = {};
   for (const slot of R32_THIRD_SLOTS) {
@@ -289,7 +284,6 @@ function assignThirds(standings /* all 12 groups 3rd-place teams */) {
   return map;
 }
 
-// Resolve a R32 slot object to an actual team code (given standings + thirdMap)
 function resolveSlot(side, standings, thirdMap, r32MatchNum) {
   if (side.r) {
     if (side.r[0] === "1") return standings[side.r[1]][0];
@@ -302,7 +296,6 @@ function resolveSlot(side, standings, thirdMap, r32MatchNum) {
   return null;
 }
 
-// Given a team + rank (0=1st, 1=2nd), find which R32 match they play in (and opponent)
 function findR32ForRanked(team, rank, standings, thirdMap) {
   const r32Matches = ALL_MATCHES.filter(m => m.group === "R32");
   for (const m of r32Matches) {
@@ -315,25 +308,19 @@ function findR32ForRanked(team, rank, standings, thirdMap) {
   return null;
 }
 
-// For 3rd-place: the team MIGHT go to any R32 slot whose allowed groups contain its group.
-// Return the full list of possibilities with opponents assuming the R32 uses that slot.
 function findR32For3rd(team, standings) {
   const g = GROUP_KEYS.find(k => GROUPS[k].includes(team));
   const possibleSlots = R32_THIRD_SLOTS.filter(s => s.from.includes(g));
   return possibleSlots.map(slot => {
     const m = ALL_MATCHES.find(mm => mm.num === slot.num);
-    // Opponent is the "1X" side → use X's 1st-place team in standings
     const otherSide = m.team1.r && m.team1.r[0] === "1" ? m.team1 : m.team2;
     const opponent = standings[otherSide.r[1]][0];
     return { match: m, opponent };
   });
 }
 
-// Resolve later rounds assuming our team wins every match
 function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
-  // Build win table: each match's winner
   const winners = {};
-  // First, pre-resolve all R32 matchups (t1, t2) so we can pick both sides
   const r32Resolved = {};
   ALL_MATCHES.filter(m => m.group === "R32").forEach(m => {
     r32Resolved[m.num] = {
@@ -342,9 +329,7 @@ function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
     };
   });
 
-  // Mark our team winning its R32
   winners[r32MatchNum] = team;
-  // For every other R32, pick the higher-FIFA-ranked team as winner
   ALL_MATCHES.filter(m => m.group === "R32").forEach(m => {
     if (m.num === r32MatchNum) return;
     const { t1, t2 } = r32Resolved[m.num];
@@ -352,7 +337,6 @@ function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
     winners[m.num] = FIFA_RANK[t1] < FIFA_RANK[t2] ? t1 : t2;
   });
 
-  // Now resolve R16/QF/SF/F/3rd progressively, our team always wins
   const resolveKOSide = (side) => {
     if (side.w !== undefined) return winners[side.w] || null;
     if (side.l !== undefined) {
@@ -360,14 +344,6 @@ function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
       if (!m) return null;
       const w = winners[side.l];
       if (!w) return null;
-      // get loser
-      const sides = [m.team1, m.team2];
-      const resolved = sides.map(s => {
-        if (s.w !== undefined) return winners[s.w];
-        if (s.r) return null;  // shouldn't happen here
-        return null;
-      });
-      // for 3rd-place it's from SF matches, those have .w sides
       const t1 = resolveKOSide(m.team1);
       const t2 = resolveKOSide(m.team2);
       return t1 === w ? t2 : t1;
@@ -377,14 +353,9 @@ function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
 
   const stages = ["R16", "QF", "SF", "FINAL"];
   const path = [];
-  // Add R32 entry
   const r32Match = ALL_MATCHES.find(m => m.num === r32MatchNum);
   const r32 = r32Resolved[r32MatchNum];
-  path.push({
-    stage: "R32",
-    match: r32Match,
-    opponent: r32.t1 === team ? r32.t2 : r32.t1,
-  });
+  path.push({ stage: "R32", match: r32Match, opponent: r32.t1 === team ? r32.t2 : r32.t1 });
 
   for (const stage of stages) {
     const matches = ALL_MATCHES.filter(m => m.group === stage);
@@ -395,14 +366,13 @@ function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
       if (!t1 || !t2) continue;
       if (t1 === team || t2 === team) {
         foundInStage = { match: m, opponent: t1 === team ? t2 : t1 };
-        winners[m.num] = team; // our team keeps winning
+        winners[m.num] = team;
       } else {
-        // pick higher-ranked
         winners[m.num] = FIFA_RANK[t1] < FIFA_RANK[t2] ? t1 : t2;
       }
     }
     if (foundInStage) {
-      path.push({ stage, match: foundInStage.match, opponent: foundInStage.opponent });
+      path.push({ stage: foundInStage.match.group, match: foundInStage.match, opponent: foundInStage.opponent });
     } else {
       break;
     }
@@ -412,11 +382,10 @@ function traceWinsFrom(r32MatchNum, team, standings, thirdMap) {
 
 // ==================== Google Calendar link ====================
 function gcalLink(match, team1Code, team2Code) {
-  // Build start/end in UTC; ET=EDT=UTC-4 in June/July
   const [y,mo,d] = match.date.split("-").map(Number);
   const [h,mi] = match.timeET.split(":").map(Number);
-  const startUTC = new Date(Date.UTC(y, mo-1, d, h+4, mi));  // ET→UTC
-  const endUTC = new Date(startUTC.getTime() + 2*60*60*1000); // 2h duration
+  const startUTC = new Date(Date.UTC(y, mo-1, d, h+4, mi));
+  const endUTC = new Date(startUTC.getTime() + 2*60*60*1000);
   const fmt = (dt) => dt.toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
   const t1 = team1Code && TEAMS[team1Code] ? TEAMS[team1Code].ja : (team1Code || "TBD");
   const t2 = team2Code && TEAMS[team2Code] ? TEAMS[team2Code].ja : (team2Code || "TBD");
@@ -443,7 +412,7 @@ function gmapsLink(venue) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue + ", " + v.city)}`;
 }
 
-// ==================== UI Components ====================
+// ==================== Shared UI Components ====================
 function FlagTeam({ code, size="base" }) {
   if (!code) return <span className="text-zinc-600 italic text-xs">未定</span>;
   const t = TEAMS[code];
@@ -498,16 +467,12 @@ function VenueRow({ match }) {
   );
 }
 
-function MatchCard({ match, myTeam, opponent, stageLabel, tone="base", actionLabel }) {
-  // tone: "base" (group stage / confirmed), "sim" (simulated KO)
+function MatchCard({ match, myTeam, opponent, stageLabel, tone="base" }) {
   const t1 = match.team1;
   const t2 = match.team2;
-  // For group stage the match data has team codes directly
   let shownT1 = typeof t1 === "string" ? t1 : null;
   let shownT2 = typeof t2 === "string" ? t2 : null;
-  // If KO (objects), we show myTeam vs opponent
   if (!shownT1) { shownT1 = myTeam; shownT2 = opponent; }
-  // Ensure myTeam is on the left
   if (myTeam && shownT2 === myTeam) { [shownT1, shownT2] = [shownT2, shownT1]; }
 
   return (
@@ -515,7 +480,6 @@ function MatchCard({ match, myTeam, opponent, stageLabel, tone="base", actionLab
       ${tone === "sim"
         ? "border-amber-500/30 bg-gradient-to-br from-amber-950/20 to-zinc-950"
         : "border-emerald-500/30 bg-gradient-to-br from-emerald-950/20 to-zinc-950"}`}>
-      {/* LED-board header */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-black/60 border-b border-zinc-800">
         <div className="flex items-baseline gap-2">
           <span className={`font-display text-lg tracking-widest
@@ -536,17 +500,15 @@ function MatchCard({ match, myTeam, opponent, stageLabel, tone="base", actionLab
           <span className="font-display text-xl text-zinc-600 tracking-widest shrink-0">VS</span>
           <div className="flex-1 min-w-0 text-right">
             <div className="inline-flex items-center justify-end gap-1.5 min-w-0">
-              <span className={`font-semibold truncate text-sm`}>
+              <span className="font-semibold truncate text-sm">
                 {shownT2 && TEAMS[shownT2] ? TEAMS[shownT2].ja : "未定"}
               </span>
               <span className="text-2xl">{shownT2 && TEAMS[shownT2] ? TEAMS[shownT2].flag : "❓"}</span>
             </div>
           </div>
         </div>
-
         <TimeRow match={match} />
         <VenueRow match={match} />
-
         <div className="mt-3 flex gap-2">
           <a
             href={gcalLink(match, shownT1, shownT2)}
@@ -561,70 +523,349 @@ function MatchCard({ match, myTeam, opponent, stageLabel, tone="base", actionLab
   );
 }
 
-// Simple SVG map of North America with venue pins
-function VenueMap({ highlightVenues = [] }) {
-  // Simple lat/lng projection (Mercator-lite) over a fixed bounding box
-  const MIN_LNG = -125, MAX_LNG = -70;
-  const MIN_LAT = 18,   MAX_LAT = 50;
-  const W = 340, H = 220;
-  const proj = (lat, lng) => ({
-    x: ((lng - MIN_LNG) / (MAX_LNG - MIN_LNG)) * W,
-    y: H - ((lat - MIN_LAT) / (MAX_LAT - MIN_LAT)) * H,
-  });
+// ==================== Calendar Components ====================
+
+function CalendarMatchCard({ item, tzMode, expanded, onToggle }) {
+  const { match, t1, t2, isSim, isCandidate, candidateIndex } = item;
+
+  const displayTime = tzMode === "jst" ? etToJST(match) : etToLocal(match);
+  const stageLbl = stageJa(match.group) + (isCandidate ? ` 候補${candidateIndex}` : "");
+  const hasTeams = !!(t1 && t2);
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto rounded-xl border border-zinc-800 bg-zinc-950" preserveAspectRatio="xMidYMid meet">
-      {/* Very approximate coast silhouette */}
-      <path
-        d="M 15 40 L 55 28 L 95 30 L 135 25 L 175 30 L 215 25 L 260 35 L 295 50
-           L 310 80 L 320 110 L 325 150 L 300 180 L 260 195 L 215 205 L 170 200
-           L 130 210 L 95 205 L 60 185 L 35 155 L 20 110 Z"
-        fill="#0f172a" stroke="#1e293b" strokeWidth="1"
-      />
-      {/* Venue pins */}
-      {Object.entries(VENUES).map(([name, v]) => {
-        const p = proj(v.lat, v.lng);
-        const isHighlighted = highlightVenues.includes(name);
-        return (
-          <g key={name}>
-            <circle cx={p.x} cy={p.y} r={isHighlighted ? 6 : 2.5}
-                    fill={isHighlighted ? "#10b981" : "#475569"}
-                    stroke={isHighlighted ? "#6ee7b7" : "none"}
-                    strokeWidth={isHighlighted ? 1.5 : 0}
-                    className={isHighlighted ? "animate-pulse" : ""} />
-            {isHighlighted && (
-              <text x={p.x} y={p.y - 9} fontSize="8" textAnchor="middle"
-                    fill="#6ee7b7" className="font-mono" style={{ fontFamily: "IBM Plex Mono" }}>
-                {v.city}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
+    <div className={`rounded-xl border overflow-hidden
+      ${isSim
+        ? "border-amber-500/40 bg-gradient-to-r from-amber-950/20 to-zinc-950"
+        : "border-zinc-800 bg-zinc-950"}`}>
+
+      {/* Compact row — tap to expand */}
+      <button className="w-full px-3 py-2.5 flex items-center gap-2.5 text-left" onClick={onToggle}>
+        {/* Time column */}
+        <div className="w-[52px] shrink-0 text-center">
+          <div className={`font-mono text-sm font-bold leading-tight
+            ${isSim ? "text-amber-300" : "text-emerald-400"}`}>
+            {displayTime.time}
+          </div>
+          <div className="font-mono text-[9px] text-zinc-600 leading-none mt-0.5">
+            {tzMode === "jst" ? "JST" : "現地"}
+          </div>
+        </div>
+
+        {/* Stage badge */}
+        <div className={`shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap
+          ${isSim ? "bg-amber-500/20 text-amber-300" : "bg-zinc-800 text-zinc-400"}`}>
+          {stageLbl}
+        </div>
+
+        {/* Teams / TBD */}
+        <div className="flex-1 min-w-0">
+          {hasTeams ? (
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="text-base leading-none">{TEAMS[t1]?.flag || "❓"}</span>
+              <span className="font-semibold text-xs text-zinc-200 truncate">{TEAMS[t1]?.ja || t1}</span>
+              <span className="text-zinc-600 text-[10px] shrink-0">vs</span>
+              <span className="text-base leading-none">{TEAMS[t2]?.flag || "❓"}</span>
+              <span className="font-semibold text-xs text-zinc-200 truncate">{TEAMS[t2]?.ja || t2}</span>
+            </div>
+          ) : (
+            <div className="text-zinc-500 text-xs font-mono">組合せ未定</div>
+          )}
+          <div className="text-[10px] text-zinc-600 font-mono truncate mt-0.5">{match.city}</div>
+        </div>
+
+        {/* Chevron */}
+        <div className={`shrink-0 text-zinc-500 text-xs transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}>
+          ▾
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="border-t border-zinc-800 px-3 py-3 space-y-3">
+          {/* Header row: match# + badge */}
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[10px] text-zinc-500">
+              MATCH #{String(match.num).padStart(3, "0")} · {stageJa(match.group)}
+            </span>
+            <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded
+              ${isSim ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/10 text-emerald-400"}`}>
+              {isSim ? "SIMULATED" : "CONFIRMED"}
+            </span>
+          </div>
+
+          {/* Teams large display */}
+          {hasTeams ? (
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex-1 min-w-0"><FlagTeam code={t1} size="lg" /></div>
+              <span className="font-display text-xl text-zinc-600 tracking-widest shrink-0">VS</span>
+              <div className="flex-1 min-w-0 text-right">
+                <div className="inline-flex items-center justify-end gap-1.5">
+                  <span className="font-semibold text-sm truncate">{TEAMS[t2]?.ja || "未定"}</span>
+                  <span className="text-2xl">{TEAMS[t2]?.flag || "❓"}</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-zinc-500 text-sm py-1">
+              対戦チーム未定
+            </div>
+          )}
+
+          {/* All time zones */}
+          <TimeRow match={match} />
+
+          {/* Venue */}
+          <VenueRow match={match} />
+
+          {/* Google Calendar */}
+          {hasTeams && (
+            <a
+              href={gcalLink(match, t1, t2)}
+              target="_blank" rel="noopener noreferrer"
+              className="block text-center text-[11px] font-mono py-1.5 border border-zinc-700 rounded-lg hover:border-emerald-400 hover:text-emerald-400 text-zinc-300 transition-colors"
+            >
+              📅 Google カレンダーに追加
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CalendarTab({ myTeam }) {
+  const [tzMode, setTzMode] = useState("jst");       // "local" | "jst"
+  const [cityFilter, setCityFilter] = useState("all");
+  const [simMode, setSimMode] = useState("all");     // "all" | "1" | "2" | "3"
+  const [expandedNum, setExpandedNum] = useState(null);
+
+  const teamInfo = TEAMS[myTeam];
+
+  // Compute sim path data when in sim mode
+  const simData = useMemo(() => {
+    if (simMode === "all") return null;
+    const rank = parseInt(simMode);
+    if (rank === 3) {
+      const { standings } = standingsWithMyRank(myTeam, 2);
+      const thirdMap = assignThirds(standings);
+      const r32Opts = findR32For3rd(myTeam, standings);
+      return { kind: "3rd", r32Opts };
+    } else {
+      const rankIdx = rank - 1;
+      const { standings } = standingsWithMyRank(myTeam, rankIdx);
+      const thirdMap = assignThirds(standings);
+      const r32Info = findR32ForRanked(myTeam, rankIdx, standings, thirdMap);
+      if (!r32Info) return { kind: "none" };
+      const path = traceWinsFrom(r32Info.match.num, myTeam, standings, thirdMap);
+      return { kind: "rank", path };
+    }
+  }, [myTeam, simMode]);
+
+  // Build the flat match list with resolved teams
+  const matchList = useMemo(() => {
+    let items = [];
+
+    if (simMode === "all") {
+      items = ALL_MATCHES.map(m => ({
+        match: m,
+        t1: typeof m.team1 === "string" ? m.team1 : null,
+        t2: typeof m.team2 === "string" ? m.team2 : null,
+        isSim: false,
+        isCandidate: false,
+        candidateIndex: null,
+      }));
+    } else {
+      // GS matches for selected team
+      const gsItems = ALL_MATCHES
+        .filter(m => typeof m.team1 === "string" && (m.team1 === myTeam || m.team2 === myTeam))
+        .map(m => ({
+          match: m,
+          t1: m.team1,
+          t2: m.team2,
+          isSim: false,
+          isCandidate: false,
+          candidateIndex: null,
+        }));
+
+      let koItems = [];
+      if (simData?.kind === "3rd") {
+        koItems = simData.r32Opts.map((opt, i) => ({
+          match: opt.match,
+          t1: myTeam,
+          t2: opt.opponent,
+          isSim: true,
+          isCandidate: true,
+          candidateIndex: i + 1,
+        }));
+      } else if (simData?.kind === "rank") {
+        koItems = simData.path.map(p => ({
+          match: p.match,
+          t1: myTeam,
+          t2: p.opponent,
+          isSim: true,
+          isCandidate: false,
+          candidateIndex: null,
+        }));
+      }
+      items = [...gsItems, ...koItems];
+    }
+
+    // City filter
+    if (cityFilter !== "all") {
+      items = items.filter(item => VENUES[item.match.venue]?.city === cityFilter);
+    }
+
+    // Sort chronologically by match number (= schedule order)
+    return items.sort((a, b) => a.match.num - b.match.num);
+  }, [myTeam, simMode, simData, cityFilter]);
+
+  // Group by the display date (in selected timezone)
+  const grouped = useMemo(() => {
+    const groups = new Map();
+    matchList.forEach(item => {
+      const dateKey = tzMode === "jst"
+        ? etToJST(item.match).date
+        : etToLocal(item.match).date;
+      if (!groups.has(dateKey)) groups.set(dateKey, []);
+      groups.get(dateKey).push(item);
+    });
+    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [matchList, tzMode]);
+
+  const totalCount = matchList.length;
+
+  // Unique key for expanded state (candidateIndex disambiguates 3rd-place options sharing a match slot if needed)
+  const expandKey = (item) => `${item.match.num}-${item.candidateIndex ?? 0}`;
+
+  return (
+    <div className="pb-20">
+      {/* ── Sticky filter bar ── */}
+      <div className="sticky top-12 z-10 bg-black/95 backdrop-blur border-b border-zinc-900 px-4 pt-2.5 pb-2 space-y-2">
+
+        {/* Row 1: TZ toggle + city filter */}
+        <div className="flex gap-2 items-center">
+          {/* Timezone toggle */}
+          <div className="flex rounded-lg overflow-hidden border border-zinc-800 shrink-0">
+            {[
+              { k: "local", label: "現地" },
+              { k: "jst",   label: "JST" },
+            ].map(opt => (
+              <button key={opt.k} onClick={() => setTzMode(opt.k)}
+                className={`px-3 py-1.5 text-[11px] font-mono transition-colors
+                  ${tzMode === opt.k ? "bg-emerald-500 text-black font-bold" : "text-zinc-400 hover:text-zinc-200"}`}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* City filter */}
+          <select
+            value={cityFilter}
+            onChange={e => setCityFilter(e.target.value)}
+            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-300 min-w-0"
+          >
+            <option value="all">🌎 全都市</option>
+            {ALL_CITIES.map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Row 2: Sim mode selector */}
+        <div className="flex gap-1">
+          {[
+            { k: "all", label: "全試合" },
+            { k: "1",   label: `${teamInfo.flag} 1位` },
+            { k: "2",   label: `${teamInfo.flag} 2位` },
+            { k: "3",   label: `${teamInfo.flag} 3位` },
+          ].map(s => (
+            <button key={s.k} onClick={() => { setSimMode(s.k); setExpandedNum(null); }}
+              className={`flex-1 py-1.5 rounded-lg text-[11px] font-mono border transition-colors whitespace-nowrap
+                ${simMode === s.k
+                  ? "bg-emerald-500 text-black border-emerald-400 font-bold"
+                  : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:border-zinc-600"}`}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Count */}
+        <div className="font-mono text-[10px] text-zinc-600 text-right -mt-0.5">
+          {totalCount}試合表示中
+        </div>
+      </div>
+
+      {/* ── Sim mode note ── */}
+      {simMode !== "all" && (
+        <div className="mx-4 mt-3 p-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5">
+          <p className="text-[11px] text-amber-200/80 font-mono leading-relaxed">
+            {simMode === "3"
+              ? `※ ${teamInfo.flag} ${teamInfo.ja}が3位通過した場合のR32候補を表示。他グループはFIFAランク順で決定。`
+              : `※ ${teamInfo.flag} ${teamInfo.ja}が${simMode}位通過・全勝した想定のシミュレーション。他グループはFIFAランク順で決定。`}
+          </p>
+        </div>
+      )}
+
+      {/* ── Date-grouped match list ── */}
+      <div className="px-4 py-3 space-y-5">
+        {grouped.length === 0 && (
+          <div className="text-center text-zinc-500 font-mono text-sm py-12">
+            該当する試合がありません
+          </div>
+        )}
+
+        {grouped.map(([dateKey, items]) => (
+          <div key={dateKey}>
+            {/* Date header */}
+            <div className="flex items-center gap-2 mb-2">
+              <div className="font-display text-sm tracking-widest text-emerald-400">
+                {fmtShort(dateKey)}
+              </div>
+              <div className="flex-1 h-px bg-zinc-800" />
+              <div className="font-mono text-[10px] text-zinc-600">{items.length}試合</div>
+            </div>
+
+            {/* Match cards for this date */}
+            <div className="space-y-1.5">
+              {items.map(item => {
+                const key = expandKey(item);
+                return (
+                  <CalendarMatchCard
+                    key={key}
+                    item={item}
+                    tzMode={tzMode}
+                    expanded={expandedNum === key}
+                    onToggle={() => setExpandedNum(prev => prev === key ? null : key)}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
 // ==================== Main App ====================
 export default function App() {
   const [myTeam, setMyTeam] = useState("JPN");
-  const [scenario, setScenario] = useState(1);  // 1, 2, 3 (1st, 2nd, 3rd)
-  const [tab, setTab] = useState("gs");         // "gs" | "ko" | "map"
+  const [scenario, setScenario] = useState(1);
+  const [tab, setTab] = useState("gs");  // "gs" | "ko" | "cal"
 
   const myGroup = useMemo(
     () => GROUP_KEYS.find(g => GROUPS[g].includes(myTeam)),
     [myTeam]
   );
 
-  // Scenario → computed path
   const sim = useMemo(() => {
     if (scenario === 3) {
-      // 3rd place: show possibilities
       const { standings } = standingsWithMyRank(myTeam, 2);
       const thirdMap = assignThirds(standings);
       const r32Opts = findR32For3rd(myTeam, standings);
       return { kind:"3rd", standings, thirdMap, r32Opts };
     } else {
-      const rankIdx = scenario - 1; // 0 or 1
+      const rankIdx = scenario - 1;
       const { standings } = standingsWithMyRank(myTeam, rankIdx);
       const thirdMap = assignThirds(standings);
       const r32Info = findR32ForRanked(myTeam, rankIdx, standings, thirdMap);
@@ -634,21 +875,12 @@ export default function App() {
     }
   }, [myTeam, scenario]);
 
-  // GS matches for my team
   const myGSMatches = useMemo(() =>
     ALL_MATCHES
       .filter(m => typeof m.team1 === "string" && (m.team1 === myTeam || m.team2 === myTeam))
       .sort((a,b) => a.num - b.num),
     [myTeam]
   );
-
-  // Venues to highlight on the map
-  const highlightVenues = useMemo(() => {
-    const v = new Set(myGSMatches.map(m => m.venue));
-    if (sim.kind === "rank") sim.path.forEach(p => v.add(p.match.venue));
-    if (sim.kind === "3rd") sim.r32Opts.forEach(o => v.add(o.match.venue));
-    return Array.from(v);
-  }, [myGSMatches, sim]);
 
   return (
     <div className="min-h-screen bg-black text-zinc-100" style={{
@@ -682,9 +914,9 @@ export default function App() {
         {/* ---- Tabs ---- */}
         <div className="grid grid-cols-3 border-b border-zinc-900 sticky top-0 bg-black/95 backdrop-blur z-10">
           {[
-            {k:"gs",  label:"GL試合"},
-            {k:"ko",  label:"決勝T"},
-            {k:"map", label:"MAP"},
+            { k:"gs",  label:"GL試合" },
+            { k:"ko",  label:"決勝T" },
+            { k:"cal", label:"カレンダー" },
           ].map(t => (
             <button key={t.k} onClick={()=>setTab(t.k)}
               className={`py-3 font-display text-base tracking-widest
@@ -725,7 +957,6 @@ export default function App() {
         {/* ---- KO Tab ---- */}
         {tab === "ko" && (
           <div className="p-4 space-y-3 pb-20">
-            {/* Scenario selector */}
             <div className="flex gap-1.5">
               {[1,2,3].map(s => (
                 <button key={s} onClick={()=>setScenario(s)}
@@ -796,36 +1027,13 @@ export default function App() {
           </div>
         )}
 
-        {/* ---- Map Tab ---- */}
-        {tab === "map" && (
-          <div className="p-4 space-y-3 pb-20">
-            <div className="font-display text-xl tracking-widest text-zinc-200 mb-1">
-              試合会場マップ
-            </div>
-            <div className="text-[11px] font-mono text-zinc-500 mb-2">
-              {TEAMS[myTeam].flag} {TEAMS[myTeam].ja}の関連会場をハイライト ({highlightVenues.length}箇所)
-            </div>
-            <VenueMap highlightVenues={highlightVenues} />
-            <div className="mt-3 space-y-1.5">
-              {highlightVenues.map(v => (
-                <a key={v} href={gmapsLink(v)} target="_blank" rel="noopener noreferrer"
-                   className="flex items-center justify-between px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-950 hover:border-emerald-500/40 transition">
-                  <div className="text-xs min-w-0">
-                    <div className="text-zinc-200 truncate">{v}</div>
-                    <div className="text-zinc-500 font-mono text-[10px]">{VENUES[v].city}</div>
-                  </div>
-                  <span className="text-[10px] font-mono text-sky-400">Google Maps↗</span>
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* ---- Calendar Tab ---- */}
+        {tab === "cal" && <CalendarTab myTeam={myTeam} />}
 
         <footer className="text-center py-6 text-[10px] font-mono text-zinc-700 tracking-widest">
           ALL TIMES ET · DATA: FIFA v17 (10 APR 2026) · FIFA RANK APR 2026
         </footer>
       </div>
-
     </div>
   );
 }
