@@ -970,8 +970,8 @@ export default function App() {
         <div className="grid grid-cols-2 border-b border-zinc-900 sticky bg-black/95 backdrop-blur z-10"
              style={{ top: "env(safe-area-inset-top)" }}>
           {[
-            { k:"sim", label:"試合SIM" },
-            { k:"cal", label:"カレンダー" },
+            { k:"sim", label:"Match Simulator" },
+            { k:"cal", label:"Calendar" },
           ].map(t => (
             <button key={t.k} onClick={() => setTab(t.k)}
               className={`py-3 font-display text-base tracking-widest transition-colors
